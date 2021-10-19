@@ -1,0 +1,122 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+  push:
+    branches:
+      - main
+      - "!releases/**"
+  workflow_dispatch:
+    inputs:
+      versionName:
+        default: 0.0.2
+        description: "Name of version (ie 0.0.2)"
+        required: true
+      preReleaseSuffix:
+        default: ""
+        description: "Pre Release suffix? appends -alpha to tag (alpha, beta etc.)"
+        required: false
+
+jobs:
+  skip_check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if pushing without a new release commit
+        if: ${{ github.event_name == 'push' && ( !startsWith(github.event.head_commit.message, '[new rel') || contains(github.event.head_commit.message, '(#)') ) }}
+        run: |
+          curl -i -H "Authorization: token ${{ secrets.PAT }}" -X POST -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/${{github.repository}}/actions/runs/${{github.run_id}}/cancel
+  publish:
+    needs: skip_check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ["16"]
+    defaults:
+      run:
+        working-directory: ./app
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          repository: ${{ secrets.CORE_REPO }}
+          fetch-depth: 0
+          # https://stackoverflow.com/a/58393457/8608146
+          token: ${{ secrets.PAT }}
+      - name: Create release branch
+        run: |
+          if [ "${{github.event_name}}" = "workflow_dispatch" ] ; then
+            git checkout -b releases/v${{ github.event.inputs.versionName }}-${{ github.event.inputs.preReleaseSuffix }}
+          elif [ "${{github.event_name}}"  = "release" ] ; then
+            git checkout -b releases/${{ github.event.release.tag_name }}
+          else
+            git checkout -b releases/$(echo "${{github.event.head_commit.message}}" | cut -d']' -f2 | sed 's/^[[:space:]]*//' | cut -d' ' -f1)
+          fi
+        shell: bash
+      - name: Install Node, NPM and Yarn
+        uses: actions/setup-node@v2
+        with:
+          node-version: ${{ matrix.node }}
+          cache: yarn
+          cache-dependency-path: app/yarn.lock
+      - name: Install dependencies
+        run: |
+          npx yarn install
+      - name: Setup yq
+        if: matrix.os == 'ubuntu-latest'
+        uses: mikefarah/yq@master
+      - name: Setup yq win
+        if: matrix.os == 'windows-latest'
+        run: |
+          # https://stackoverflow.com/a/46760714/8608146
+          iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+          choco install -y yq
+          $env:ChocolateyInstall = Convert-Path "$((Get-Command choco).Path)\..\.."   
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
+      - name: Initialize bot git config
+        shell: bash
+        id: version_configure
+        run: |
+          source ../.ci/scripts/git_release.sh \
+          "${{github.event_name}}" "${{github.event.release.tag_name}}" \
+          "${{github.event.head_commit.message}}" \
+          "${{github.event.inputs.versionName}}" "${{github.event.inputs.preReleaseSuffix}}"
+          echo "::set-output name=new_tag_name::$(echo $version)"
+      - name: Build/release Electron app
+        uses: samuelmeuli/action-electron-builder@v1
+        with:
+          github_token: ${{ secrets.github_token }}
+          release: false
+          args: --publish=never
+          package_root: ./app
+      - name: Backup built files
+        run: |
+          mkdir ../../buildfiles
+          cp -r ./release/build ../../buildfiles
+        shell: bash
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.github_token }}
+      - name: Restore built files
+        run: |
+          mkdir -p ./release/build
+          cp -r ../../buildfiles ./release/build
+        shell: bash
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version_configure.outputs.new_tag_name }}
+          token: ${{ secrets.github_token }}
+          files: |
+            ./app/release/build/*
+            !./app/release/build/*unpacked
+      - name: Archive production artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          path: |
+            ./app/release/build
+            !./app/release/build/*unpacked
