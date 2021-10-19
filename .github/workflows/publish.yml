@@ -92,20 +92,22 @@ jobs:
           args: --publish=never
           package_root: ./app
       - name: Backup built files
-        run: |
-          mkdir ../../buildfiles
-          cp -r ./release/build ../../buildfiles
-        shell: bash
+        uses: actions/upload-artifact@v2
+        with:
+          name: buildfiles-${{ matrix.os }}
+          path: |
+            ./app/release/build
+            !./app/release/build/*unpacked
       - name: Checkout code
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
           token: ${{ secrets.github_token }}
       - name: Restore built files
-        run: |
-          mkdir -p ./release/build
-          cp -r ../../buildfiles ./release/build
-        shell: bash
+        uses: actions/download-artifact@master
+        with:
+          name: buildfiles-${{ matrix.os }}
+          path: ./app/release/build
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
@@ -114,9 +116,6 @@ jobs:
           files: |
             ./app/release/build/*
             !./app/release/build/*unpacked
-      - name: Archive production artifacts
-        uses: actions/upload-artifact@v2
+      - uses: geekyeggo/delete-artifact@v1
         with:
-          path: |
-            ./app/release/build
-            !./app/release/build/*unpacked
+          name: buildfiles-${{ matrix.os }}
