@@ -58,8 +58,9 @@ jobs:
         uses: actions/setup-node@v2
         with:
           node-version: ${{ matrix.node }}
-          cache: yarn
-          cache-dependency-path: app/yarn.lock
+#           Temporarily disable caching
+#           cache: yarn
+#           cache-dependency-path: app/yarn.lock
       - name: Install dependencies
         run: |
           npx yarn install
